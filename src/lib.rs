@@ -1,5 +1,5 @@
-use thiserror::Error;
 use std::{fmt::Debug, iter::Peekable};
+use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Unexpected end of input")]
@@ -89,8 +89,18 @@ impl SingleCharacterMatcher {
 }
 
 #[derive(Debug, Clone)]
-struct BacktrackInfo {
-    consumed: usize,
+struct GroupBacktrackState<'a, T> {
+    input: BufferedIterator<T>,
+    captures: Vec<String>,
+    backtrack: BacktrackInfo<'a, T>,
+    matchers_to_resume: std::slice::Iter<'a, Matcher>,
+}
+
+#[derive(Debug, Clone)]
+enum BacktrackInfo<'a, T> {
+    Range(usize),
+    Group(usize, Vec<GroupBacktrackState<'a, T>>),
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,7 +175,7 @@ impl<T: Iterator<Item = (usize, char)>> Iterator for BufferedIterator<T> {
 
 impl Matcher {
     pub fn new(input: &mut Peekable<impl Iterator<Item = char> + Clone>) -> Result<Self> {
-    match input.peek() {
+        match input.peek() {
             Some('^') => {
                 input.next();
                 Ok(Self::StartOfString)
@@ -235,32 +245,31 @@ impl Matcher {
         }
     }
 
-    pub fn test<T>(
-        &self,
+    pub fn test<'a, T>(
+        &'a self,
         input: &mut BufferedIterator<T>,
         captured_groups: &Vec<String>,
-        backtrack: Option<BacktrackInfo>,
-    ) -> (bool, Vec<String>, Option<BacktrackInfo>)        
-
-        where
+        backtrack: Option<BacktrackInfo<'a, T>>,
+    ) -> (bool, Vec<String>, Option<BacktrackInfo<'a, T>>)
+    where
         T: Iterator<Item = (usize, char)> + Clone + Debug,
     {
-    match self {
-        Matcher::SingleCharacter(c) => (
-            input.next().is_some_and(|ch| c.test(ch.1)),
-            Vec::new(),
-            None,
-        ),
-        Matcher::StartOfString => (
-            input.peek().is_some_and(|(idx, _)| *idx == 0),
-            Vec::new(),
-            None,
-        ),
-        Matcher::EndOfString => (input.peek().is_none(), Vec::new(), None),
-        Matcher::CaptureGroup(inner) => {
-            Self::test_group(inner, input, captured_groups, backtrack)
-        }
-        
+        match self {
+            Matcher::SingleCharacter(c) => (
+                input.next().is_some_and(|ch| c.test(ch.1)),
+                Vec::new(),
+                None,
+            ),
+            Matcher::StartOfString => (
+                input.peek().is_some_and(|(idx, _)| *idx == 0),
+                Vec::new(),
+                None,
+            ),
+            Matcher::EndOfString => (input.peek().is_none(), Vec::new(), None),
+            Matcher::CaptureGroup(inner) => {
+                Self::test_group(inner, input, captured_groups, backtrack)
+            }
+
             Matcher::Backreference(index) => {
                 let index = index - 0;
                 if index >= captured_groups.len() {
@@ -269,14 +278,19 @@ impl Matcher {
                     );
                     (false, Vec::new(), None)
                 } else {
-                    eprintln!("Backreference {index}: '{:?}'", captured_groups);
+                    eprintln!(
+                        "Backreference {index}: '{:?}' - '{:?}'",
+                        captured_groups,
+                        Iterator::take(input.clone(), captured_groups[index].len())
+                            .collect::<Vec<_>>()
+                    );
                     (
                         captured_groups[index]
                             .chars()
                             .all(|ch| input.next().is_some_and(|c| c.1 == ch)),
-                            Vec::new(),
-                            None,
-                        )
+                        Vec::new(),
+                        None,
+                    )
                 }
             }
             Matcher::Alternative => todo!("Alternatives are only supported in capture groups"),
@@ -288,17 +302,21 @@ impl Matcher {
                         .test(&mut input_clone, captured_groups, backtrack.clone())
                         .0
                     {
-                    break;
+                        break;
                     }
-                    std::mem::swap(input, &mut input_clone);
-                    if let Some(BacktrackInfo { consumed }) = backtrack {
+                    if let Some(BacktrackInfo::Range(consumed)) = backtrack {
                         if count >= (consumed - 1) {
+                            eprintln!(
+                                "Range limiting due to backtracking {count} >= ({consumed} - 1)"
+                            );
                             break;
                         }
                     }
+                    std::mem::swap(input, &mut input_clone);
                     count += 1;
                     if let Some(max) = max {
                         if count == *max {
+                            eprintln!("Range limiting due to max {count} == {max}");
                             break;
                         }
                     }
@@ -306,39 +324,45 @@ impl Matcher {
 
                 if let Some(min) = min {
                     if count < *min {
+                        eprintln!("Range failed due to min {count} < {min}");
                         return (false, Vec::new(), None);
                     }
                 }
                 if count > 0 {
-                    return (true, Vec::new(), Some(BacktrackInfo { consumed: count }));
+                    return (true, Vec::new(), Some(BacktrackInfo::Range(count)));
                 } else {
                     return (true, Vec::new(), None);
                 }
             }
-             }
+        }
     }
 
-    fn test_group<T>(
-        inner: &Vec<Self>,
+    fn test_group<'a, T>(
+        inner: &'a Vec<Self>,
         input: &mut BufferedIterator<T>,
         captured_groups: &Vec<String>,
-        backtrack: Option<BacktrackInfo>,
-    ) -> (bool, Vec<String>, Option<BacktrackInfo>)        where
+        backtrack: Option<BacktrackInfo<'a, T>>,
+    ) -> (bool, Vec<String>, Option<BacktrackInfo<'a, T>>)
+    where
         T: Iterator<Item = (usize, char)> + Clone + Debug,
     {
         let options = inner.split(|m| m == &Matcher::Alternative);
-        'option_loop: for option in options {
-            #[derive(Debug)]
-            struct BacktrackState<'a, T>(
-                BufferedIterator<T>,
-                Vec<String>,
-                BacktrackInfo,
-                std::slice::Iter<'a, Matcher>,
-            );
-
-            let mut backtrack_stack: Vec<BacktrackState<'_, T>> = Vec::new();
+        'option_loop: for (option_id, option) in options.enumerate() {
+            let mut backtrack_stack: Vec<GroupBacktrackState<'_, T>> =
+                if let Some(BacktrackInfo::Group(stack_option, stack)) = backtrack.clone() {
+                    if stack_option == option_id {
+                        if stack.is_empty() {
+                            continue 'option_loop;
+                        }
+                        stack
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
             let mut backtrack_info = None;
-        let mut buffered_input = input.clone();
+            let mut buffered_input = input.clone();
             let mut our_captures = Vec::new();
             let mut all_captures = captured_groups.clone();
             all_captures.push(String::new()); // Placeholder for our group
@@ -346,13 +370,27 @@ impl Matcher {
 
             let mut matcher_iter = option.iter();
             let mut backtrack_matcher_iter = matcher_iter.clone();
+            if let Some(mut state) = backtrack_stack.pop() {
+                //eprintln!("Backtracking on entry: {:?}, {:?}", buffered_input, state);
+                std::mem::swap(&mut buffered_input, &mut state.input);
+                std::mem::swap(&mut our_captures, &mut state.captures);
+                all_captures = captured_groups
+                    .iter()
+                    .chain(vec![String::new()].iter())
+                    .chain(our_captures.iter())
+                    .map(|c| c.clone())
+                    .collect();
+                backtrack_info = Some(state.backtrack);
+                std::mem::swap(&mut matcher_iter, &mut state.matchers_to_resume);
+                backtrack_matcher_iter = matcher_iter.clone();
+            }
             'match_loop: while let Some(m) = matcher_iter.next() {
-                let mut backtrack_state = BacktrackState(
-                    buffered_input.clone(),
-                    our_captures.clone(),
-                    BacktrackInfo { consumed: 0 },
-                    backtrack_matcher_iter.clone(),
-                );
+                let mut backtrack_state = GroupBacktrackState {
+                    input: buffered_input.clone(),
+                    captures: our_captures.clone(),
+                    backtrack: BacktrackInfo::None,
+                    matchers_to_resume: backtrack_matcher_iter.clone(),
+                };
                 backtrack_matcher_iter.next();
 
                 let (matched, captures, backtrack) =
@@ -362,21 +400,23 @@ impl Matcher {
                     if let Some(mut state) = backtrack_stack.pop() {
                         eprintln!(
                             "Match failed, backtracking: {:?}, {:?}",
-                            buffered_input, state
+                            buffered_input.pop_divided(),
+                            state
                         );
-                        std::mem::swap(&mut buffered_input, &mut state.0);
-                        std::mem::swap(&mut our_captures, &mut state.1);
+                        std::mem::swap(&mut buffered_input, &mut state.input);
+                        std::mem::swap(&mut our_captures, &mut state.captures);
                         all_captures = captured_groups
                             .iter()
+                            .chain(vec![String::new()].iter())
                             .chain(our_captures.iter())
                             .map(|c| c.clone())
                             .collect();
-                        backtrack_info = Some(state.2);
-                        std::mem::swap(&mut matcher_iter, &mut state.3);
+                        backtrack_info = Some(state.backtrack);
+                        std::mem::swap(&mut matcher_iter, &mut state.matchers_to_resume);
                         backtrack_matcher_iter = matcher_iter.clone();
                         continue 'match_loop;
                     } else {
-                        eprintln!("Match failed, nothing to backtrack");
+                        // eprintln!("Match failed, nothing to backtrack");
                         continue 'option_loop;
                     }
                 } else {
@@ -385,26 +425,27 @@ impl Matcher {
                         all_captures.push(capture);
                     }
                     if let Some(backtrack) = backtrack {
-                        backtrack_state.2 = backtrack;
+                        backtrack_state.backtrack = backtrack;
                         backtrack_stack.push(backtrack_state);
                     }
                 }
-                
             }
             let matched_value = buffered_input
-            .pop_divided()
-            .expect("We have subdivided before, popping should succeed");
-        std::mem::swap(input, &mut buffered_input);
+                .pop_divided()
+                .expect("We have subdivided before, popping should succeed");
+            std::mem::swap(input, &mut buffered_input);
 
-        our_captures.insert(0, matched_value);
-        return (true, our_captures, None);
+            our_captures.insert(0, matched_value);
+            return (
+                true,
+                our_captures,
+                Some(BacktrackInfo::Group(option_id, backtrack_stack)),
+            );
         }
 
         (false, Vec::new(), None)
     }
-
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Pattern {
@@ -435,7 +476,6 @@ impl Pattern {
                 return (true, buffered, captured);
             }
             iter.next();
-
         }
         (false, String::new(), Vec::new())
     }
@@ -621,6 +661,36 @@ mod test {
     }
 
     #[test]
+    fn backtracking_in_group() {
+        let pattern = Pattern::new(r"([^xyz]+)a").expect("Pattern is correct");
+        assert!(pattern.test("mocha"));
+    }
+
+    #[test]
+    fn zero_or_one_backtrack() {
+        let pattern = Pattern::new(r"t?t").expect("Pattern is correct");
+        assert!(pattern.test("tt"));
+        assert!(pattern.test("t"));
+    }
+
+    #[test]
+    fn backreference_after_backtrack() {
+        let pattern = Pattern::new(r"(t)t?\1").expect("Pattern is correct");
+        assert!(pattern.test("ttt"));
+        eprintln!("second case");
+        assert!(pattern.test("tt"));
+    }
+
+    #[test]
+    fn last_stage_test() {
+        let pattern = Pattern::new(r"(([abc]+)-([def]+)) is \1, not ([^xyz]+), \2, or \3")
+            .expect("Pattern is correct");
+        //        let pattern =
+        //            Pattern::new(r"((abc)-(def)) is \1, not (efg,?), \2").expect("Pattern is correct");
+        assert!(pattern.test("abc-def is abc-def, not efg, abc, or def"));
+    }
+
+    #[test]
     fn full_test() {
         let pattern = Pattern::new(r"a\d[\w:][^x]").expect("Pattern is correct");
         assert!(pattern.test("a9cv"));
@@ -632,4 +702,3 @@ mod test {
         assert!(!pattern.test("ab9:v"));
     }
 }
-
