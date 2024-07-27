@@ -115,7 +115,7 @@ pub struct Pattern {
 
 impl Pattern {
     pub fn new(input: &str) -> Result<Self> {
-        let mut input = input.chars().enumerate().peekable();
+        let mut input = input.chars().peekable();
         let mut matchers = Vec::new();
         while let Some(_) = input.peek() {
             matchers.push(Matcher::new(&mut input)?);
@@ -124,7 +124,7 @@ impl Pattern {
         Ok(Self { matchers })
     }
     pub fn test(&self, input: &str) -> bool {
-        let mut iter = input.chars().peekable();
+        let mut iter = input.chars().enumerate().peekable();
         while let Some(_) = iter.peek() {
             if self.test_section(iter.clone()) {
                 return true;
