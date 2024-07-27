@@ -98,14 +98,70 @@ enum Matcher {
     },
     CaptureGroup(Vec<Matcher>),
     SingleCharacter(SingleCharacterMatcher),
+    Backreference(usize),
     StartOfString,
     EndOfString,
     Alternative,
 }
+#[derive(Debug, Clone)]
+struct BufferedIterator<T> {
+    inner: T,
+    buffer: String,
+    subbuffers: Vec<String>,
+    peeked: Option<Option<(usize, char)>>,
+}
+
+impl<T: Iterator<Item = (usize, char)>> BufferedIterator<T> {
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            buffer: String::new(),
+            subbuffers: Vec::new(),
+            peeked: None,
+        }
+    }
+
+    pub fn subdivide(&mut self) {
+        self.subbuffers.push(String::new());
+    }
+
+    pub fn pop_divided(&mut self) -> Option<String> {
+        self.subbuffers.pop()
+    }
+
+    pub fn peek(&mut self) -> Option<&(usize, char)> {
+        let iter = &mut self.inner;
+        self.peeked.get_or_insert_with(|| iter.next()).as_ref()
+    }
+
+    pub fn take(self) -> (T, String) {
+        (self.inner, self.buffer)
+    }
+}
+
+impl<T: Iterator<Item = (usize, char)>> Iterator for BufferedIterator<T> {
+    type Item = (usize, char);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let ret = match self.peeked.take() {
+            Some(ch) => ch,
+            None => self.inner.next(),
+        };
+
+        if let Some((_, ch)) = ret {
+            self.buffer.push(ch);
+            for subbuffer in self.subbuffers.iter_mut() {
+                subbuffer.push(ch);
+            }
+        }
+
+        ret
+    }
+}
 
 impl Matcher {
-    pub fn new(input: &mut Peekable<impl Iterator<Item = char>>) -> Result<Self> {
-        match input.peek() {
+    pub fn new(input: &mut Peekable<impl Iterator<Item = char> + Clone>) -> Result<Self> {
+    match input.peek() {
             Some('^') => {
                 input.next();
                 Ok(Self::StartOfString)
@@ -132,6 +188,15 @@ impl Matcher {
                 Ok(Self::Alternative)
             }
             Some(_) => {
+                let mut cloned_iter = input.clone();
+                if let (Some('\\'), Some(dig)) = (cloned_iter.next(), cloned_iter.next()) {
+                    if dig.is_ascii_digit() {
+                        std::mem::swap(input, &mut cloned_iter);
+                        return Ok(Self::Backreference(String::from(dig).parse().expect(
+                            "Dig was checked to be a digit, parsing as usize should pass",
+                        )));
+                    }
+                }
                 let matcher = Self::SingleCharacter(SingleCharacterMatcher::new(input)?);
 
                 Ok(match input.peek() {
@@ -166,22 +231,42 @@ impl Matcher {
         }
     }
 
-    pub fn test<T>(&self, input: &mut Peekable<T>) -> bool
+    pub fn test<T>(
+        &self,
+        input: &mut BufferedIterator<T>,
+        captured_groups: &Vec<String>,
+    ) -> (bool, Option<String>)
     where
         T: Iterator<Item = (usize, char)> + Clone,
     {
     match self {
-            Matcher::SingleCharacter(c) => input.next().is_some_and(|ch| c.test(ch.1)),
-            Matcher::StartOfString => input.peek().is_some_and(|(idx, _)| *idx == 0),   
-            Matcher::EndOfString => input.peek().is_none(),
-            Matcher::CaptureGroup(inner) => Self::test_group(inner, input),
+            Matcher::SingleCharacter(c) => (input.next().is_some_and(|ch| c.test(ch.1)), None),
+            Matcher::StartOfString => (input.peek().is_some_and(|(idx, _)| *idx == 0), None),
+            Matcher::EndOfString => (input.peek().is_none(), None),
+ Matcher::CaptureGroup(inner) => Self::test_group(inner, input, captured_groups),
+            Matcher::Backreference(index) => {
+                let index = index - 1;
+                if index >= captured_groups.len() {
+                    eprintln!(
+                        "Referenced nonexistent group {index}. Captured: {captured_groups:?}"
+                    );
+                    (false, None)
+                } else {
+                    (
+                        captured_groups[index]
+                            .chars()
+                            .all(|ch| input.next().is_some_and(|c| c.1 == ch)),
+                        None,
+                    )
+                }
+            }
             Matcher::Alternative => todo!("Alternatives are only supported in capture groups"),
             Matcher::Repeat { matcher, min, max } => {
                 let mut count = 0;
                 loop {
                     let mut input_clone = input.clone();
-                    if !matcher.test(&mut input_clone) {
-                        break;
+                    if !matcher.test(&mut input_clone, captured_groups).0 {
+                    break;
                     }
                     std::mem::swap(input, &mut input_clone);
                     count += 1;
@@ -194,35 +279,48 @@ impl Matcher {
 
                 if let Some(min) = min {
                     if count < *min {
-                        return false;
+                        return (false, None);
                     }
                 }
 
-                return true;
+                return (true, None);
             }
              }
     }
 
-    fn test_group<T>(inner: &Vec<Self>, input: &mut Peekable<T>) -> bool
+    fn test_group<T>(
+        inner: &Vec<Self>,
+        input: &mut BufferedIterator<T>,
+        captured_groups: &Vec<String>,
+    ) -> (bool, Option<String>)
     where
         T: Iterator<Item = (usize, char)> + Clone,
     {
         let options = inner.split(|m| m == &Matcher::Alternative);
         for option in options {
-            let mut input_clone = input.clone();
-            if option.iter().all(|m| m.test(&mut input_clone)) {
-                std::mem::swap(input, &mut input_clone);
-                return true;
+            let mut buffered_input = input.clone();
+            buffered_input.subdivide();
+
+            if option
+            .iter()
+            .all(|m| m.test(&mut buffered_input, captured_groups).0)
+        {
+            let matched_value = buffered_input
+                    .pop_divided()
+                    .expect("We have subdivided before, popping should succeed");
+                std::mem::swap(input, &mut buffered_input);
+
+                return (true, Some(matched_value));
             }
         }
 
-        false
+        (false, None)
     }
 
 }
 
 
-
+#[derive(Debug, Clone)]
 pub struct Pattern {
     matchers: Vec<Matcher>,
 }
@@ -238,25 +336,40 @@ impl Pattern {
         Ok(Self { matchers })
     }
     pub fn test(&self, input: &str) -> bool {
-        let mut iter = input.chars().enumerate().peekable();
+        self.run(input).0
+    }
+
+    pub fn run(&self, input: &str) -> (bool, String, Vec<String>) {
+        let mut iter = BufferedIterator::new(input.chars().enumerate());
         while let Some(_) = iter.peek() {
-            if self.test_section(iter.clone()) {
-                return true;
+            let mut buffered_iter = iter.clone();
+            let (matched, captured) = self.test_section(&mut buffered_iter);
+            if matched {
+                let (_, buffered) = buffered_iter.take();
+                return (true, buffered, captured);
             }
             iter.next();
+
         }
-        false
+        (false, String::new(), Vec::new())
     }
-    fn test_section<T>(&self, mut input: Peekable<T>) -> bool
+
+    fn test_section<T>(&self, input: &mut BufferedIterator<T>) -> (bool, Vec<String>)
     where
         T: Iterator<Item = (usize, char)> + Clone,
     {
-    for matcher in &self.matchers {
-            if !matcher.test(&mut input) {
-                return false;
+        let mut captured = Vec::new();
+        for matcher in &self.matchers {
+        let (matched, value) = matcher.test(input, &captured);
+            if !matched {
+            return (false, captured);
+        }
+
+        if let Some(value) = value {
+            captured.push(value);
             }
         }
-        true
+        (true, captured)
     }
 }
 #[cfg(test)]
@@ -375,6 +488,23 @@ mod test {
         assert!(pattern.test("abc1"));
         assert!(pattern.test("xyz2"));
         assert!(!pattern.test("xyz"));
+    }
+
+    #[test]
+    fn match_test() {
+        let pattern = Pattern::new(r"([abc]+)(\d+)").expect("Pattern is correct");
+        let (matched, all, groups) = pattern.run("abc123");
+        assert!(matched);
+        assert_eq!(all, "abc123");
+        assert_eq!(groups[0], "abc");
+        assert_eq!(groups[1], "123");
+    }
+
+    #[test]
+    fn backreference_test() {
+        let pattern = Pattern::new(r"(\w+) and \1").expect("Pattern is correct");
+        assert!(pattern.test("cat and cat"));
+        assert!(!pattern.test("cat and dog"));
     }
 
     #[test]
