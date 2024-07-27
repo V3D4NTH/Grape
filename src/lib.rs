@@ -114,6 +114,23 @@ impl Matcher {
                 input.next();
                 Ok(Self::EndOfString)
             }
+            Some('(') => {
+                input.next();
+                let mut matchers = Vec::new();
+                while let Some(ch) = input.peek() {
+                    if *ch == ')' {
+                        input.next();
+                        break;
+                    }
+                    matchers.push(Matcher::new(input)?);
+                }
+                // FIXME: We're allowing unterminated groups here as well!
+                Ok(Self::CaptureGroup(matchers))
+            }
+            Some('|') => {
+                input.next();
+                Ok(Self::Alternative)
+            }
             Some(_) => {
                 let matcher = Self::SingleCharacter(SingleCharacterMatcher::new(input)?);
 
@@ -133,23 +150,6 @@ impl Matcher {
                             min: None,
                             max: None,
                         }
-                    }
-                    Some('(') => {
-                        input.next();
-                        let mut matchers = Vec::new();
-                        while let Some(ch) = input.peek() {
-                            if *ch == ')' {
-                                input.next();
-                                break;
-                            }
-                            matchers.push(Matcher::new(input)?);
-                        }
-                        // FIXME: We're allowing unterminated groups here as well!
-                        Ok(Self::CaptureGroup(matchers))
-                    }
-                    Some('|') => {
-                        input.next();
-                        Ok(Self::Alternative)
                     }
                     Some('?') => {
                         input.next();
