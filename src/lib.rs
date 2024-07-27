@@ -88,20 +88,25 @@ impl SingleCharacterMatcher {
 
 enum Matcher {
     SingleCharacter(SingleCharacterMatcher),
+    StartOfString,
 }
 
 impl Matcher {
     pub fn new(input: &mut Peekable<impl Iterator<Item = char>>) -> Result<Self> {
         match input.peek() {
+            Some('^') => {
+                input.next();
+                Ok(Self::StartOfString)
+            }
             Some(_) => Ok(Self::SingleCharacter(SingleCharacterMatcher::new(input)?)),
             None => Err(Error::EOF),
         }
     }
 
-    pub fn test(&self, input: &mut impl Iterator<Item = char>) -> bool {
+    pub fn test(&self, input: &mut Peekable<impl Iterator<Item = (usize, char)>>) -> bool {
         match self {
-            Matcher::SingleCharacter(c) => input.next().is_some_and(|ch| c.test(ch)),
-        }
+            Matcher::SingleCharacter(c) => input.next().is_some_and(|ch| c.test(ch.1)),
+            Matcher::StartOfString => input.peek().is_some_and(|(idx, _)| *idx == 0),        }
     }
 }
 pub struct Pattern {
@@ -110,7 +115,7 @@ pub struct Pattern {
 
 impl Pattern {
     pub fn new(input: &str) -> Result<Self> {
-        let mut input = input.chars().peekable();
+        let mut input = input.chars().enumerate().peekable();
         let mut matchers = Vec::new();
         while let Some(_) = input.peek() {
             matchers.push(Matcher::new(&mut input)?);
@@ -128,7 +133,7 @@ impl Pattern {
         }
         false
     }
-    fn test_section(&self, mut input: impl Iterator<Item = char>) -> bool {
+    fn test_section(&self, mut input: Peekable<impl Iterator<Item = (usize, char)>>) -> bool {
         for matcher in &self.matchers {
             if !matcher.test(&mut input) {
                 return false;
@@ -205,14 +210,23 @@ mod test {
     }
 
     #[test]
+    fn start_of_string_match() {
+        let pattern = Pattern::new(r"^a").expect("Pattern is correct");
+        assert!(pattern.test("a"));
+        assert!(pattern.test("ab"));
+        assert!(!pattern.test("ba"));
+    }
+
+    #[test]
     fn full_test() {
-        let pattern = Pattern::new(r"a\d[\w:]").expect("Pattern is correct");
-        assert!(pattern.test("a9c"));
+        let pattern = Pattern::new(r"a\d[\w:][^x]").expect("Pattern is correct");
+        assert!(pattern.test("a9cv"));
         assert!(pattern.test("da4cg"));
-        assert!(!pattern.test("ab9c"));
-        assert!(!pattern.test("ab9X"));
-        assert!(!pattern.test("ab9_"));
-        assert!(!pattern.test("ab9:"));
+        assert!(!pattern.test("da4cx"));
+        assert!(!pattern.test("ab9cv"));
+        assert!(!pattern.test("ab9Xv"));
+        assert!(!pattern.test("ab9_v"));
+        assert!(!pattern.test("ab9:v"));
     }
 }
 
