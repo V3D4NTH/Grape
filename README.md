@@ -1,40 +1,40 @@
-[![progress-banner](https://backend.codecrafters.io/progress/grep/69dc3153-cf76-406f-aad9-108a27ee0629)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# Grape
 
-This is a starting point for Rust solutions to the
-["Build Your Own grep" Challenge](https://app.codecrafters.io/courses/grep/overview).
+----
 
-[Regular expressions](https://en.wikipedia.org/wiki/Regular_expression)
-(Regexes, for short) are patterns used to match character combinations in
-strings. [`grep`](https://en.wikipedia.org/wiki/Grep) is a CLI tool for
-searching using Regexes.
+This is Grape. Grape is a grep. Grape is built using Rust.
 
-In this challenge you'll build your own implementation of `grep`. Along the way
-we'll learn about Regex syntax, how parsers/lexers work, and how regular
-expressions are evaluated.
+<br>
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+<p align="center">
+<img align="center" src="https://i.pinimg.com/originals/96/53/c4/9653c4811e0741d2bcfdf72f3267cb7e.gif"/>
+</p>
 
-# Passing the first stage
+<br>
 
-The entry point for your `grep` implementation is in `src/main.rs`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
 
+## Make It Your Own
+To use DirtyBit, your system must have [Rust](https://www.rust-lang.org/tools/install) installed. 
+
+-  Clone the repository:
 ```sh
-git add .
-git commit -m "pass 1st stage" # any msg
-git push origin master
+git clone https://github.com/V3D4NTH/Grape
 ```
 
-Time to move on to the next stage!
+- Switch to the directory:
+```sh
+cd Grape
+```
 
-# Stage 2 & beyond
 
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `cargo (1.62)` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
+- Ensure you have `cargo (1.62)` installed locally
+ 
+ - Run `./your_program.sh` to run your program, which is implemented in
    `src/main.rs`. This command compiles your Rust project, so it might be slow
    the first time you run it. Subsequent runs will be fast.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+
+ - Build the project using:
+```sh
+cargo build --release
+```
+
