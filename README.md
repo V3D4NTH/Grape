@@ -14,7 +14,7 @@ This is Grape. Grape is a grep. Grape is built using Rust.
 
 
 ## Make It Your Own
-To use DirtyBit, your system must have [Rust](https://www.rust-lang.org/tools/install) installed. 
+To use Grape, your system must have [Rust](https://www.rust-lang.org/tools/install) installed. 
 
 -  Clone the repository:
 ```sh
